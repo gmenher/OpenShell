@@ -316,6 +316,8 @@ mod tests {
             labels: HashMap::from([("team".to_string(), "agent".to_string())]),
             annotations: HashMap::new(),
             workspace: String::new(),
+            await_main_process_attachment: false,
+            workload_template_name: String::new(),
         };
         let bytes = request.encode_to_vec();
         let json = codec
@@ -371,6 +373,7 @@ mod tests {
             ("openshell.compute.v1.DriverSandboxSpec", "sandbox_token"),
             ("openshell.v1.IssueSandboxTokenResponse", "token"),
             ("openshell.v1.RefreshSandboxTokenResponse", "token"),
+            ("openshell.v1.ExtensionServiceCredential", "token"),
             ("openshell.v1.CreateSshSessionResponse", "token"),
             ("openshell.v1.RevokeSshSessionRequest", "token"),
             ("openshell.v1.TcpForwardInit", "authorization_token"),

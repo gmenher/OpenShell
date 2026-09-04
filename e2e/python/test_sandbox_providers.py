@@ -39,7 +39,7 @@ def _is_placeholder_for_env_key(value: str, key: str) -> bool:
     token = value.removeprefix(prefix)
     if token == value:
         return False
-    return token.startswith("v") and token.endswith(f"_{key}")
+    return token.startswith(("v", "s")) and token.endswith(f"_{key}")
 
 
 def _default_policy() -> sandbox_pb2.SandboxPolicy:
@@ -99,68 +99,6 @@ def _delete_provider(stub: object, name: str) -> None:
             raise
 
 
-@pytest.fixture
-def providers_v2_enabled(
-    sandbox_client: SandboxClient,
-    _gateway_config_guard: None,
-) -> Iterator[None]:
-    """Enable the gateway-global ``providers_v2_enabled`` opt-in for one test.
-
-    Composing a provider's network policy onto a sandbox is gated behind this
-    setting, which defaults off; the built-in github profile's git-transport
-    rules only reach the sandbox with it enabled.
-
-    The setting is gateway-global. Exclusivity against other xdist workers is
-    provided by the ``exclusive_gateway_config`` marker plus the autouse
-    ``_gateway_config_guard`` guard (see conftest): no concurrent worker is
-    mid-test while this fixture mutates and restores the setting, so none can
-    observe the transient value. Depending on the guard here also orders the
-    exclusive lock acquisition before the mutation.
-
-    ``GetGatewayConfig`` returns known keys even when unset, with an empty
-    ``SettingValue`` (no populated oneof), so the setting is treated as present
-    only when its value oneof is set; otherwise restore is a delete. ``global``
-    is a Python keyword, so it is passed through a dict expansion.
-    """
-    stub = sandbox_client._stub
-    key = "providers_v2_enabled"
-    config = stub.GetGatewayConfig(sandbox_pb2.GetGatewayConfigRequest())
-    prior_value = sandbox_pb2.SettingValue()
-    had_prior = (
-        key in config.settings
-        and config.settings[key].WhichOneof("value") is not None
-    )
-    if had_prior:
-        prior_value.CopyFrom(config.settings[key])
-
-    stub.UpdateConfig(
-        openshell_pb2.UpdateConfigRequest(
-            setting_key=key,
-            setting_value=sandbox_pb2.SettingValue(bool_value=True),
-            **{"global": True},
-        )
-    )
-    try:
-        yield
-    finally:
-        if had_prior:
-            stub.UpdateConfig(
-                openshell_pb2.UpdateConfigRequest(
-                    setting_key=key,
-                    setting_value=prior_value,
-                    **{"global": True},
-                )
-            )
-        else:
-            stub.UpdateConfig(
-                openshell_pb2.UpdateConfigRequest(
-                    setting_key=key,
-                    delete_setting=True,
-                    **{"global": True},
-                )
-            )
-
-
 # ===========================================================================
 # Tests: placeholder visibility
 # ===========================================================================
@@ -195,38 +133,97 @@ def test_provider_credentials_available_as_env_vars(
             assert value != "sk-e2e-test-key-12345"
 
 
-def test_generic_provider_credentials_available_as_env_vars(
+def test_profileless_provider_creation_is_rejected(
+    sandbox_client: SandboxClient,
+) -> None:
+    """New providers must reference a built-in or imported profile."""
+    with pytest.raises(grpc.RpcError) as exc_info:
+        sandbox_client._stub.CreateProvider(
+            openshell_pb2.CreateProviderRequest(
+                provider=datamodel_pb2.Provider(
+                    metadata=datamodel_pb2.ObjectMeta(
+                        name="e2e-test-profileless-provider"
+                    ),
+                    type="generic",
+                    credentials={"CUSTOM_SERVICE_TOKEN": "token-generic-123"},
+                )
+            )
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    assert "provider profile 'generic' was not found" in exc_info.value.details()
+
+
+def test_endpointless_profile_credentials_fail_closed_without_policy_binding(
     sandbox: Callable[..., Sandbox],
     sandbox_client: SandboxClient,
 ) -> None:
-    """Generic provider env vars are placeholders, not raw secrets."""
+    """Endpointless profile credentials are withheld without an explicit binding."""
     with provider(
         sandbox_client._stub,
-        name="e2e-test-generic-provider-env",
-        provider_type="generic",
-        credentials={
-            "CUSTOM_SERVICE_TOKEN": "token-generic-123",
-            "CUSTOM_SERVICE_URL": "https://internal.example.test/api",
-        },
+        name="e2e-test-google-cloud-without-policy-binding",
+        provider_type="google-cloud",
+        credentials={"GCP_ADC_ACCESS_TOKEN": "gcp-e2e-token"},
     ) as provider_name:
         spec = datamodel_pb2.SandboxSpec(
             policy=_default_policy(),
             providers=[provider_name],
         )
 
-        def read_generic_env_vars() -> str:
+        def read_gcp_token() -> str:
             import os
 
-            token = os.environ.get("CUSTOM_SERVICE_TOKEN", "NOT_SET")
-            url = os.environ.get("CUSTOM_SERVICE_URL", "NOT_SET")
-            return f"{token}|{url}"
+            return os.environ.get("GCP_ADC_ACCESS_TOKEN", "NOT_SET")
 
         with sandbox(spec=spec, delete_on_exit=True) as sb:
-            result = sb.exec_python(read_generic_env_vars)
+            result = sb.exec_python(read_gcp_token)
             assert result.exit_code == 0, result.stderr
-            token, url = result.stdout.strip().split("|")
-            assert _is_placeholder_for_env_key(token, "CUSTOM_SERVICE_TOKEN")
-            assert _is_placeholder_for_env_key(url, "CUSTOM_SERVICE_URL")
+            assert result.stdout.strip() == "NOT_SET"
+
+
+def test_endpointless_profile_credentials_use_explicit_policy_binding(
+    sandbox: Callable[..., Sandbox],
+    sandbox_client: SandboxClient,
+) -> None:
+    """An endpointless profile emits credentials only with an explicit binding."""
+    with provider(
+        sandbox_client._stub,
+        name="e2e-test-google-cloud-policy-binding",
+        provider_type="google-cloud",
+        credentials={"GCP_ADC_ACCESS_TOKEN": "gcp-e2e-token"},
+    ) as provider_name:
+        policy = _default_policy()
+        policy.network_policies["gcp_storage"].CopyFrom(
+            sandbox_pb2.NetworkPolicyRule(
+                name="gcp_storage",
+                endpoints=[
+                    sandbox_pb2.NetworkEndpoint(
+                        host="storage.googleapis.com",
+                        port=443,
+                        protocol="rest",
+                        access="full",
+                        credential_binding=sandbox_pb2.NetworkCredentialBinding(
+                            provider=provider_name
+                        ),
+                    )
+                ],
+            )
+        )
+        spec = datamodel_pb2.SandboxSpec(
+            policy=policy,
+            providers=[provider_name],
+        )
+
+        def read_gcp_token() -> str:
+            import os
+
+            return os.environ.get("GCP_ADC_ACCESS_TOKEN", "NOT_SET")
+
+        with sandbox(spec=spec, delete_on_exit=True) as sb:
+            result = sb.exec_python(read_gcp_token)
+            assert result.exit_code == 0, result.stderr
+            assert _is_placeholder_for_env_key(
+                result.stdout.strip(), "GCP_ADC_ACCESS_TOKEN"
+            )
 
 
 def test_nvidia_provider_injects_nvidia_api_key_env_var(
@@ -253,9 +250,7 @@ def test_nvidia_provider_injects_nvidia_api_key_env_var(
         with sandbox(spec=spec, delete_on_exit=True) as sb:
             result = sb.exec_python(read_nvidia_key)
             assert result.exit_code == 0, result.stderr
-            assert _is_placeholder_for_env_key(
-                result.stdout.strip(), "NVIDIA_API_KEY"
-            )
+            assert _is_placeholder_for_env_key(result.stdout.strip(), "NVIDIA_API_KEY")
 
 
 def test_attach_detach_updates_credentials_for_later_exec_launches(
@@ -269,15 +264,15 @@ def test_attach_detach_updates_credentials_for_later_exec_launches(
     with provider(
         stub,
         name=provider_name,
-        provider_type="generic",
-        credentials={"CUSTOM_ATTACH_TOKEN": "token-attach-detach"},
+        provider_type="nvidia",
+        credentials={"NVIDIA_API_KEY": "token-attach-detach"},
     ):
         spec = datamodel_pb2.SandboxSpec(policy=_default_policy(), providers=[])
 
         def read_attach_token() -> str:
             import os
 
-            return os.environ.get("CUSTOM_ATTACH_TOKEN", "NOT_SET")
+            return os.environ.get("NVIDIA_API_KEY", "NOT_SET")
 
         def exec_token(sb: Sandbox) -> str:
             result = sb.exec_python(read_attach_token)
@@ -292,7 +287,7 @@ def test_attach_detach_updates_credentials_for_later_exec_launches(
                 if expected == "NOT_SET":
                     matched = last == expected
                 else:
-                    matched = _is_placeholder_for_env_key(last, "CUSTOM_ATTACH_TOKEN")
+                    matched = _is_placeholder_for_env_key(last, "NVIDIA_API_KEY")
                 if matched:
                     return
                 time.sleep(2)
@@ -310,7 +305,7 @@ def test_attach_detach_updates_credentials_for_later_exec_launches(
                 )
                 wait_for_token(
                     sb,
-                    "openshell:resolve:env:CUSTOM_ATTACH_TOKEN",
+                    "openshell:resolve:env:NVIDIA_API_KEY",
                 )
 
                 stub.DetachSandboxProvider(
@@ -397,8 +392,12 @@ def test_update_provider_preserves_unset_credentials_and_config(
             openshell_pb2.CreateProviderRequest(
                 provider=datamodel_pb2.Provider(
                     metadata=datamodel_pb2.ObjectMeta(name=name),
-                    type="generic",
-                    credentials={"KEY_A": "val-a", "KEY_B": "val-b"},
+                    type="codex",
+                    credentials={
+                        "CODEX_AUTH_ACCESS_TOKEN": "val-a",
+                        "CODEX_AUTH_REFRESH_TOKEN": "val-b",
+                        "CODEX_AUTH_ACCOUNT_ID": "account-id",
+                    },
                     config={"BASE_URL": "https://example.com"},
                 )
             )
@@ -409,7 +408,7 @@ def test_update_provider_preserves_unset_credentials_and_config(
                 provider=datamodel_pb2.Provider(
                     metadata=datamodel_pb2.ObjectMeta(name=name),
                     type="",
-                    credentials={"KEY_A": "rotated-a"},
+                    credentials={"CODEX_AUTH_ACCESS_TOKEN": "rotated-a"},
                 )
             )
         )
@@ -442,8 +441,8 @@ def test_update_provider_empty_maps_preserves_all(
             openshell_pb2.CreateProviderRequest(
                 provider=datamodel_pb2.Provider(
                     metadata=datamodel_pb2.ObjectMeta(name=name),
-                    type="generic",
-                    credentials={"TOKEN": "secret"},
+                    type="openai",
+                    credentials={"OPENAI_API_KEY": "secret"},
                     config={"URL": "https://api.example.com"},
                 )
             )
@@ -484,8 +483,8 @@ def test_update_provider_merges_config_preserves_credentials(
             openshell_pb2.CreateProviderRequest(
                 provider=datamodel_pb2.Provider(
                     metadata=datamodel_pb2.ObjectMeta(name=name),
-                    type="generic",
-                    credentials={"API_KEY": "original-key"},
+                    type="openai",
+                    credentials={"OPENAI_API_KEY": "original-key"},
                     config={"ENDPOINT": "https://old.example.com"},
                 )
             )
@@ -527,8 +526,8 @@ def test_update_provider_rejects_type_change(
             openshell_pb2.CreateProviderRequest(
                 provider=datamodel_pb2.Provider(
                     metadata=datamodel_pb2.ObjectMeta(name=name),
-                    type="generic",
-                    credentials={"KEY": "val"},
+                    type="openai",
+                    credentials={"OPENAI_API_KEY": "val"},
                 )
             )
         )
@@ -553,8 +552,6 @@ def test_update_provider_rejects_type_change(
 # ===========================================================================
 
 
-@pytest.mark.exclusive_gateway_config
-@pytest.mark.usefixtures("providers_v2_enabled")
 def test_github_provider_allows_https_git_clone(
     sandbox: Callable[..., Sandbox],
     sandbox_client: SandboxClient,
@@ -567,9 +564,7 @@ def test_github_provider_allows_https_git_clone(
     the sandbox, exercising provider attachment, effective-policy composition,
     TLS interception, and real git behavior end to end. git delegates HTTPS to a
     ``git-remote-https`` helper whose ancestor is ``/usr/bin/git``, so the
-    profile's git binary covers it via ancestor matching. The
-    ``providers_v2_enabled`` fixture turns on the gateway-global gate that
-    composes the provider's network policy.
+    profile's git binary covers it via ancestor matching.
     """
     with provider(
         sandbox_client._stub,

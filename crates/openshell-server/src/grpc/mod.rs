@@ -17,14 +17,17 @@ use openshell_core::proto::{
     AttachSandboxProviderRequest, AttachSandboxProviderResponse, ClearDraftChunksRequest,
     ClearDraftChunksResponse, ComputeDriverCapabilities, ComputeDriverInfo,
     ConfigureProviderRefreshRequest, ConfigureProviderRefreshResponse, CreateProviderRequest,
-    CreateSandboxRequest, CreateSshSessionRequest, CreateSshSessionResponse,
-    CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteProviderProfileRequest,
-    DeleteProviderProfileResponse, DeleteProviderRefreshRequest, DeleteProviderRefreshResponse,
-    DeleteProviderRequest, DeleteProviderResponse, DeleteSandboxRequest, DeleteSandboxResponse,
-    DeleteServiceRequest, DeleteServiceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
-    DetachSandboxProviderRequest, DetachSandboxProviderResponse, EditDraftChunkRequest,
-    EditDraftChunkResponse, ExecSandboxEvent, ExecSandboxInput, ExecSandboxRequest,
-    ExposeServiceRequest, GatewayMessage, GetCurrentUserRequest, GetCurrentUserResponse,
+    CreateSandboxRequest, CreateSandboxTemplateRequest, CreateSshSessionRequest,
+    CreateSshSessionResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
+    DeleteProviderProfileRequest, DeleteProviderProfileResponse, DeleteProviderRefreshRequest,
+    DeleteProviderRefreshResponse, DeleteProviderRequest, DeleteProviderResponse,
+    DeleteSandboxRequest, DeleteSandboxResponse, DeleteSandboxTemplateRequest,
+    DeleteSandboxTemplateResponse, DeleteServiceRequest, DeleteServiceResponse,
+    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DetachSandboxProviderRequest,
+    DetachSandboxProviderResponse, EditDraftChunkRequest, EditDraftChunkResponse,
+    ExchangeProviderSubjectTokenRequest, ExchangeProviderSubjectTokenResponse, ExecSandboxEvent,
+    ExecSandboxInput, ExecSandboxRequest, ExposeServiceRequest, FinalizeMainProcessExitRequest,
+    FinalizeMainProcessExitResponse, GatewayMessage, GetCurrentUserRequest, GetCurrentUserResponse,
     GetDraftHistoryRequest, GetDraftHistoryResponse, GetDraftPolicyRequest, GetDraftPolicyResponse,
     GetGatewayConfigRequest, GetGatewayConfigResponse, GetGatewayInfoRequest,
     GetGatewayInfoResponse, GetProviderProfileRequest, GetProviderRefreshStatusRequest,
@@ -32,22 +35,25 @@ use openshell_core::proto::{
     GetSandboxConfigResponse, GetSandboxLogsRequest, GetSandboxLogsResponse,
     GetSandboxPolicyStatusRequest, GetSandboxPolicyStatusResponse,
     GetSandboxProviderEnvironmentRequest, GetSandboxProviderEnvironmentResponse, GetSandboxRequest,
-    GetServiceRequest, GetWorkspaceRequest, GetWorkspaceResponse, HealthRequest, HealthResponse,
-    ImportProviderProfilesRequest, ImportProviderProfilesResponse, IssueSandboxTokenRequest,
-    IssueSandboxTokenResponse, LintProviderProfilesRequest, LintProviderProfilesResponse,
-    ListProviderProfilesRequest, ListProviderProfilesResponse, ListProvidersRequest,
-    ListProvidersResponse, ListSandboxPoliciesRequest, ListSandboxPoliciesResponse,
-    ListSandboxProvidersRequest, ListSandboxProvidersResponse, ListSandboxesRequest,
+    GetSandboxTemplateRequest, GetServiceRequest, GetWorkspaceRequest, GetWorkspaceResponse,
+    HealthRequest, HealthResponse, ImportProviderProfilesRequest, ImportProviderProfilesResponse,
+    IssueSandboxTokenRequest, IssueSandboxTokenResponse, LintProviderProfilesRequest,
+    LintProviderProfilesResponse, ListProviderProfilesRequest, ListProviderProfilesResponse,
+    ListProvidersRequest, ListProvidersResponse, ListSandboxPoliciesRequest,
+    ListSandboxPoliciesResponse, ListSandboxProvidersRequest, ListSandboxProvidersResponse,
+    ListSandboxTemplatesRequest, ListSandboxTemplatesResponse, ListSandboxesRequest,
     ListSandboxesResponse, ListServicesRequest, ListServicesResponse, ListWorkspaceMembersRequest,
     ListWorkspaceMembersResponse, ListWorkspacesRequest, ListWorkspacesResponse,
     ProviderProfileResponse, ProviderResponse, PushSandboxLogsRequest, PushSandboxLogsResponse,
     RefreshSandboxTokenRequest, RefreshSandboxTokenResponse, RejectDraftChunkRequest,
     RejectDraftChunkResponse, RelayFrame, RemoveWorkspaceMemberRequest,
-    RemoveWorkspaceMemberResponse, ReportPolicyStatusRequest, ReportPolicyStatusResponse,
-    RevokeSshSessionRequest, RevokeSshSessionResponse, RotateProviderCredentialRequest,
-    RotateProviderCredentialResponse, SandboxResponse, ServiceEndpointResponse, ServiceStatus,
-    SubmitPolicyAnalysisRequest, SubmitPolicyAnalysisResponse, SupervisorMessage, TcpForwardFrame,
-    UndoDraftChunkRequest, UndoDraftChunkResponse, UpdateConfigRequest, UpdateConfigResponse,
+    RemoveWorkspaceMemberResponse, ReportMainProcessExitRequest, ReportMainProcessExitResponse,
+    ReportPolicyStatusRequest, ReportPolicyStatusResponse, RevokeSshSessionRequest,
+    RevokeSshSessionResponse, RotateProviderCredentialRequest, RotateProviderCredentialResponse,
+    SandboxResponse, SandboxTemplateResponse, ServiceEndpointResponse, ServiceStatus,
+    StartSandboxRequest, StopSandboxRequest, SubmitPolicyAnalysisRequest,
+    SubmitPolicyAnalysisResponse, SupervisorMessage, TcpForwardFrame, UndoDraftChunkRequest,
+    UndoDraftChunkResponse, UpdateConfigRequest, UpdateConfigResponse,
     UpdateProviderProfilesRequest, UpdateProviderProfilesResponse, UpdateProviderRequest,
     WatchSandboxRequest, open_shell_server::OpenShell,
 };
@@ -295,6 +301,34 @@ impl OpenShell for OpenShellService {
         sandbox::handle_list_sandboxes(&self.state, request).await
     }
 
+    async fn create_sandbox_template(
+        &self,
+        request: Request<CreateSandboxTemplateRequest>,
+    ) -> Result<Response<SandboxTemplateResponse>, Status> {
+        sandbox::handle_create_sandbox_template(&self.state, request).await
+    }
+
+    async fn get_sandbox_template(
+        &self,
+        request: Request<GetSandboxTemplateRequest>,
+    ) -> Result<Response<SandboxTemplateResponse>, Status> {
+        sandbox::handle_get_sandbox_template(&self.state, request).await
+    }
+
+    async fn list_sandbox_templates(
+        &self,
+        request: Request<ListSandboxTemplatesRequest>,
+    ) -> Result<Response<ListSandboxTemplatesResponse>, Status> {
+        sandbox::handle_list_sandbox_templates(&self.state, request).await
+    }
+
+    async fn delete_sandbox_template(
+        &self,
+        request: Request<DeleteSandboxTemplateRequest>,
+    ) -> Result<Response<DeleteSandboxTemplateResponse>, Status> {
+        sandbox::handle_delete_sandbox_template(&self.state, request).await
+    }
+
     async fn list_sandbox_providers(
         &self,
         request: Request<ListSandboxProvidersRequest>,
@@ -321,6 +355,20 @@ impl OpenShell for OpenShellService {
         request: Request<DeleteSandboxRequest>,
     ) -> Result<Response<DeleteSandboxResponse>, Status> {
         sandbox::handle_delete_sandbox(&self.state, request).await
+    }
+
+    async fn stop_sandbox(
+        &self,
+        request: Request<StopSandboxRequest>,
+    ) -> Result<Response<SandboxResponse>, Status> {
+        sandbox::handle_stop_sandbox(&self.state, request).await
+    }
+
+    async fn start_sandbox(
+        &self,
+        request: Request<StartSandboxRequest>,
+    ) -> Result<Response<SandboxResponse>, Status> {
+        sandbox::handle_start_sandbox(&self.state, request).await
     }
 
     // --- Exec ---
@@ -527,6 +575,13 @@ impl OpenShell for OpenShellService {
         policy::handle_get_sandbox_provider_environment(&self.state, request).await
     }
 
+    async fn exchange_provider_subject_token(
+        &self,
+        request: Request<ExchangeProviderSubjectTokenRequest>,
+    ) -> Result<Response<ExchangeProviderSubjectTokenResponse>, Status> {
+        provider::handle_exchange_provider_subject_token(&self.state, request).await
+    }
+
     async fn update_config(
         &self,
         request: Request<UpdateConfigRequest>,
@@ -664,6 +719,20 @@ impl OpenShell for OpenShellService {
         crate::supervisor_session::handle_connect_supervisor(&self.state, request).await
     }
 
+    async fn report_main_process_exit(
+        &self,
+        request: Request<ReportMainProcessExitRequest>,
+    ) -> Result<Response<ReportMainProcessExitResponse>, Status> {
+        crate::supervisor_session::handle_report_main_process_exit(&self.state, request).await
+    }
+
+    async fn finalize_main_process_exit(
+        &self,
+        request: Request<FinalizeMainProcessExitRequest>,
+    ) -> Result<Response<FinalizeMainProcessExitResponse>, Status> {
+        crate::supervisor_session::handle_finalize_main_process_exit(&self.state, request).await
+    }
+
     type RelayStreamStream =
         Pin<Box<dyn tokio_stream::Stream<Item = Result<RelayFrame, Status>> + Send + 'static>>;
 
@@ -738,7 +807,9 @@ pub mod test_support {
     use crate::ServerState;
     use crate::auth::identity::{Identity, IdentityProvider};
     use crate::auth::principal::{Principal, UserPrincipal};
-    use crate::compute::{new_test_runtime, new_test_runtime_for_driver};
+    use crate::compute::{
+        NoopTestDriver, new_test_runtime, new_test_runtime_for_driver, new_test_runtime_with_driver,
+    };
     use crate::persistence::Store;
     use crate::sandbox_index::SandboxIndex;
     use crate::sandbox_watch::SandboxWatchBus;
@@ -786,7 +857,36 @@ pub mod test_support {
             new_test_runtime_for_driver(store.clone(), driver_name).await
         };
         Arc::new(ServerState::new(
-            Config::new(None).with_database_url("sqlite::memory:?cache=shared"),
+            Config::new(None)
+                .with_database_url("sqlite::memory:?cache=shared")
+                .with_credential_drivers(["test-static"]),
+            store,
+            compute,
+            SandboxIndex::new(),
+            SandboxWatchBus::new(),
+            TracingLogBus::new(),
+            Arc::new(SupervisorSessionRegistry::new()),
+            None,
+        ))
+    }
+
+    /// Build a test state whose compute driver fails the requested number of
+    /// workspace cleanup calls before succeeding.
+    pub async fn test_server_state_with_workspace_cleanup_failures(
+        failures: usize,
+    ) -> Arc<ServerState> {
+        let store = Arc::new(
+            Store::connect("sqlite::memory:?cache=shared")
+                .await
+                .unwrap(),
+        );
+        crate::ensure_default_workspace(&store).await.unwrap();
+        let driver = Arc::new(NoopTestDriver::failing_workspace_deletes(failures));
+        let compute = new_test_runtime_with_driver(store.clone(), "test", driver).await;
+        Arc::new(ServerState::new(
+            Config::new(None)
+                .with_database_url("sqlite::memory:?cache=shared")
+                .with_credential_drivers(["test-static"]),
             store,
             compute,
             SandboxIndex::new(),

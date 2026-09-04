@@ -3,8 +3,44 @@
 Kubernetes-backed compute driver for OpenShell cluster deployments.
 
 The driver uses the Kubernetes API to create, delete, fetch, and watch sandbox
-custom resources in the configured namespace. It runs in-process with the
-gateway server.
+custom resources. It runs in-process with the gateway server and supports three
+workspace namespace modes via `workspace_mode`:
+
+- **Shared** (default): All sandboxes render into a single static namespace.
+  Resource names use `{workspace}--{name}` for collision avoidance.
+- **Managed**: The driver auto-creates/deletes a K8s namespace per workspace
+  (`openshell-{gateway_id}-{workspace_name}`), creates a ServiceAccount in each,
+  and copies OpenShift SCC annotations from the gateway namespace when present.
+- **Operator**: Workspace names map 1:1 to pre-provisioned namespaces discovered
+  through exactly one source: either a label selector
+  (`operator_namespace_label`) or a drop-in allowlist file
+  (`operator_namespace_file`). Sandbox creation fails closed if the workspace
+  namespace is not in the current allowlist. Workspace deletion only removes
+  gateway state; it never deletes or otherwise accesses the operator-managed
+  Kubernetes namespace.
+
+When the gateway configures `[openshell.gateway.otlp]`, Kubernetes
+compute-driver spans export to the same OTLP/gRPC collector with the service
+name `openshell-driver-kubernetes`. The driver preserves the gateway trace
+context and uses the same compute-driver RPC span names in its in-process and
+standalone forms. Standalone deployments set `--gateway-name` or
+`OPENSHELL_GATEWAY_NAME` so exported spans carry the same
+`openshell.gateway.name` resource attribute as gateway spans.
+
+When it creates an Agent Sandbox resource, the driver serializes the active W3C
+trace context into the controller-reserved `opentelemetry.io/trace-context`
+annotation. An OTLP-enabled Agent Sandbox controller can therefore attach its
+asynchronous reconciliation spans to the originating OpenShell create trace.
+
+Workspace namespace modes assume exclusive control of the sandbox identity
+resource chain. In shared and managed modes, only the driver and its trusted
+Agent Sandbox controller may administer the sandbox namespace, Sandbox CRs,
+sandbox pods, or configured sandbox ServiceAccount. In operator mode, the
+platform operator owns namespace lifecycle but must prevent other principals
+from creating or mutating Sandbox CRs, creating sandbox pods with fabricated
+owner references, or using the configured sandbox ServiceAccount. Treat adding
+a namespace to the operator allowlist as granting this trust; the allowlist is
+not a tenant isolation boundary.
 
 ## Runtime Model
 
@@ -24,7 +60,9 @@ state and platform events into the shared compute-driver protobuf surface used
 by the gateway.
 
 Kubernetes API calls use explicit timeouts so gRPC handlers do not block
-indefinitely when the API server is slow or unavailable.
+indefinitely when the API server is slow or unavailable. Resource and Event
+watches recover in place with API-friendly backoff after transient watcher
+errors, avoiding a gateway-side watch restart and its associated watch gap.
 
 ## Workspace Persistence
 
@@ -35,6 +73,15 @@ sentinel so subsequent starts skip the copy.
 This is a stopgap persistence model. It preserves user files across pod
 rescheduling but duplicates the base workspace and does not automatically apply
 image updates to existing PVCs. Future snapshotting should replace it.
+
+Stop preserves the Agent Sandbox resource and workspace PVC while stopping
+its pod. The driver sets `spec.operatingMode: Suspended` for `v1beta1` or
+`spec.replicas: 0` for `v1alpha1`. Start sets `Running` or one replica for the
+same resource, so the replacement pod mounts the existing claim. Delete is the
+only lifecycle operation that removes the Sandbox resource and its owned
+storage. The driver confirms the stop from both the published `Suspended`
+condition and deletion of the backing pod. Legacy `v1alpha1` controllers omit
+a usable stopped condition, so pod deletion alone confirms their stop.
 
 The workspace PVC size defaults to `workspace_default_storage_size`. Set
 `workspace_storage_class` to pin the PVC to a specific `StorageClass`; an empty
@@ -56,10 +103,17 @@ Sandbox pods run as `service_account_name` and keep
 `automountServiceAccountToken: false`. The only Kubernetes token exposed to the
 supervisor is an explicit, audience-bound projected token mounted at
 `/var/run/secrets/openshell/token` for the one-shot `IssueSandboxToken`
-bootstrap exchange.
+bootstrap exchange. The Kubernetes driver authenticates that token through the
+compute-driver protocol using its own `service_account_name` and workspace-mode
+namespace policy; the gateway receives only the verified sandbox ID.
 
 The gateway uses the supervisor relay for connect, exec, and file sync. Sandbox
 pods do not need direct external ingress for SSH.
+
+The driver forwards the canonical main-process specification to the process
+supervisor and sets pod `restartPolicy: Never`. Main-process environment
+overrides stay local to that child; the sidecar bootstrap retains the unmodified
+provider environment used by later exec, editor, and SFTP sessions.
 
 ## Container Security Context
 

@@ -338,7 +338,8 @@ create_client_sandbox() {
     --from "${CLIENT_IMAGE}" \
     --policy "${policy_file}" \
     --no-tty \
-    -- true; then
+    --detach \
+    -- sleep infinity; then
     rm -f "${policy_file}"
     return 1
   fi

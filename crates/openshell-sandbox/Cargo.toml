@@ -16,9 +16,10 @@ path = "src/main.rs"
 
 [dependencies]
 openshell-core = { path = "../openshell-core", default-features = false }
+openshell-extension-core = { path = "../openshell-extension-core" }
 openshell-ocsf = { path = "../openshell-ocsf" }
 openshell-policy = { path = "../openshell-policy" }
-openshell-supervisor-network = { path = "../openshell-supervisor-network" }
+openshell-supervisor-network = { path = "../openshell-supervisor-network", default-features = false }
 openshell-supervisor-middleware = { path = "../openshell-supervisor-middleware" }
 openshell-supervisor-middleware-builtins = { path = "../openshell-supervisor-middleware-builtins" }
 openshell-supervisor-process = { path = "../openshell-supervisor-process" }
@@ -49,15 +50,30 @@ prost = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
+uuid = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 
 [features]
-default = ["telemetry"]
-## Compile in telemetry activity collection (forwards to openshell-core/telemetry).
-## On by default; build with `--no-default-features` for a telemetry-free sandbox
-## supervisor that never collects or forwards activity summaries.
+default = ["telemetry", "bundled-ca-roots"]
+## Convenience alias: all defaults except bundled CA roots. Use
+## `--no-default-features --features system-ca-roots` to build a supervisor
+## that uses the platform trust store with telemetry intact.
+system-ca-roots = ["telemetry"]
+## Convenience alias: every default feature except `telemetry`. Build a
+## telemetry-free supervisor with
+## `--no-default-features --features defaults-without-telemetry` and stay
+## correct as new default features are added. Cargo cannot subtract a single
+## default feature, so this alias must be paired with `--no-default-features`;
+## enabling it alongside `telemetry` is a compile error rather than a silent
+## telemetry-on build. Kept in sync with `default` by
+## `rust:verify:defaults-without-telemetry`. Do not pair it with
+## `system-ca-roots`, which re-enables `telemetry`; a build with neither
+## telemetry nor bundled CA roots is plain `--no-default-features`.
+defaults-without-telemetry = ["bundled-ca-roots"]
+
 telemetry = ["openshell-core/telemetry"]
+bundled-ca-roots = ["openshell-supervisor-network/bundled-ca-roots"]
 
 [dev-dependencies]
 tempfile = "3"

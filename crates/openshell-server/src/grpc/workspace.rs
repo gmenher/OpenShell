@@ -14,9 +14,9 @@ use openshell_core::proto::{
     CreateWorkspaceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse, GetWorkspaceRequest,
     GetWorkspaceResponse, InferenceRoute, ListWorkspaceMembersRequest,
     ListWorkspaceMembersResponse, ListWorkspacesRequest, ListWorkspacesResponse, Provider,
-    RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, Sandbox, ServiceEndpoint,
-    SshSession, StoredProviderCredentialRefreshState, StoredProviderProfile, Workspace,
-    WorkspaceMember, WorkspaceRole,
+    RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, Sandbox, SandboxWorkloadTemplate,
+    ServiceEndpoint, SshSession, StoredProviderCredentialRefreshState, StoredProviderProfile,
+    Workspace, WorkspaceMember, WorkspaceRole,
 };
 use prost::Message;
 use tonic::{Request, Response, Status};
@@ -375,6 +375,7 @@ pub(super) async fn handle_delete_workspace(
     let mut blocking = Vec::new();
     for (object_type, label) in [
         (Sandbox::object_type(), "sandbox"),
+        (SandboxWorkloadTemplate::object_type(), "sandbox template"),
         (Provider::object_type(), "provider"),
         (StoredProviderProfile::object_type(), "provider profile"),
         (ServiceEndpoint::object_type(), "service"),
@@ -422,6 +423,15 @@ pub(super) async fn handle_delete_workspace(
         .delete_all_in_workspace(WorkspaceMember::object_type(), &name)
         .await
         .map_err(|e| Status::internal(format!("delete workspace members failed: {e}")))?;
+
+    // Keep the terminating workspace durable until platform cleanup has been
+    // accepted. A failed cleanup can then be retried through this same path.
+    state.compute.delete_workspace(&name).await.map_err(|e| {
+        Status::new(
+            e.code(),
+            format!("delete workspace platform resources failed: {e}"),
+        )
+    })?;
 
     let deleted = state
         .store
@@ -616,7 +626,9 @@ mod tests {
     use openshell_core::proto::datamodel::v1::ObjectMeta;
     use tonic::{Code, Request};
 
-    use crate::grpc::test_support::{authed_request, test_server_state};
+    use crate::grpc::test_support::{
+        authed_request, test_server_state, test_server_state_with_workspace_cleanup_failures,
+    };
 
     #[tokio::test]
     async fn create_workspace_returns_metadata() {
@@ -800,6 +812,72 @@ mod tests {
             &state,
             Request::new(DeleteWorkspaceRequest {
                 name: "ephemeral".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert!(resp.deleted);
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_blocked_by_sandbox_template() {
+        let state = test_server_state().await;
+
+        handle_create_workspace(
+            &state,
+            Request::new(CreateWorkspaceRequest {
+                name: "templated".to_string(),
+                labels: HashMap::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let template = SandboxWorkloadTemplate {
+            metadata: Some(ObjectMeta {
+                id: "template-1".to_string(),
+                name: "gpu-kata".to_string(),
+                created_at_ms: 1_000_000,
+                labels: HashMap::new(),
+                annotations: HashMap::new(),
+                resource_version: 0,
+                workspace: "templated".to_string(),
+                deletion_timestamp_ms: 0,
+            }),
+            spec: None,
+        };
+        state.store.put_message(&template).await.unwrap();
+
+        let err = handle_delete_workspace(
+            &state,
+            Request::new(DeleteWorkspaceRequest {
+                name: "templated".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), Code::FailedPrecondition);
+        assert!(
+            err.message().contains("sandbox template"),
+            "error should name sandbox templates as blocking resources: {}",
+            err.message()
+        );
+
+        state
+            .store
+            .delete_by_name(
+                SandboxWorkloadTemplate::object_type(),
+                "templated",
+                "gpu-kata",
+            )
+            .await
+            .unwrap();
+
+        let resp = handle_delete_workspace(
+            &state,
+            Request::new(DeleteWorkspaceRequest {
+                name: "templated".to_string(),
             }),
         )
         .await
@@ -1320,6 +1398,62 @@ mod tests {
         .unwrap()
         .into_inner();
         assert!(resp.deleted);
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_retains_terminating_record_when_platform_cleanup_fails() {
+        let state = test_server_state_with_workspace_cleanup_failures(1).await;
+
+        handle_create_workspace(
+            &state,
+            Request::new(CreateWorkspaceRequest {
+                name: "cleanup-retry".to_string(),
+                labels: HashMap::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let err = handle_delete_workspace(
+            &state,
+            Request::new(DeleteWorkspaceRequest {
+                name: "cleanup-retry".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), Code::Unavailable);
+
+        let retained: Workspace = state
+            .store
+            .get_message_by_name("", "cleanup-retry")
+            .await
+            .unwrap()
+            .expect("workspace must remain durable after cleanup failure");
+        assert_ne!(
+            retained.metadata.unwrap().deletion_timestamp_ms,
+            0,
+            "retained workspace must remain terminating"
+        );
+
+        let retry = handle_delete_workspace(
+            &state,
+            Request::new(DeleteWorkspaceRequest {
+                name: "cleanup-retry".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert!(retry.deleted);
+        assert!(
+            state
+                .store
+                .get_message_by_name::<Workspace>("", "cleanup-retry")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

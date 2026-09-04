@@ -214,7 +214,7 @@ ttl_secs = 0
 [[openshell.supervisor.middleware]]
 name = "content-guard-example"
 grpc_endpoint = "http://$SERVICE_HOST:$MIDDLEWARE_PORT"
-max_body_bytes = 262144
+max_payload_bytes = 262144
 timeout = "500ms"
 EOF
 }
@@ -444,7 +444,7 @@ EXAMPLE_TARGET_DIR="$(cargo_target_dir "$EXAMPLE_DIR/Cargo.toml")"
 GATEWAY_BIN="$ROOT_TARGET_DIR/debug/openshell-gateway"
 CLI_BIN="$ROOT_TARGET_DIR/debug/openshell"
 MIDDLEWARE_BIN="$EXAMPLE_TARGET_DIR/debug/supervisor-middleware-content-guard"
-run_setup_step "building gateway" cargo build --quiet -p openshell-server --bin openshell-gateway
+run_setup_step "building gateway" cargo build --quiet -p openshell-gateway --bin openshell-gateway
 run_setup_step "building content guard" cargo build --quiet --manifest-path "$EXAMPLE_DIR/Cargo.toml"
 run_setup_step "building CLI" cargo build --quiet -p openshell-cli --bin openshell
 generate_gateway_jwt_bundle
